@@ -1,0 +1,84 @@
+library(readr)
+library(dplyr)
+library(tidyr)
+library("rio")
+library(lubridate)
+library("datasets")
+library(flextable)#for doc.file 
+install_formats()
+
+#-----IMPORT DATA-----#
+#import data direct from web
+ds_00 <- read_csv("https://raw.githubusercontent.com/data-hydenv/data/master/hobo/2020/_00raw/10350004.csv", 
+                  col_names = c("id","date,hm","ta","lux"), col_types = cols(X2 = col_datetime(format = "%m/%d/%Y, %H:%M:%S"), 
+                                                                              X5 = col_skip(), X6 = col_skip(), 
+                                                                              X7 = col_skip(), X8 = col_skip(), 
+                                                                              X9 = col_skip()), skip = 2)
+
+#import from local files
+ds_01 <- read_csv("C:/Users/Valentina/OneDrive/Data collection, storage and management/Data/10350004.csv", 
+                  col_names = c("id","date","hm","ta","lux"), col_types = cols(X10 = col_skip(), 
+                                                                               X2 = col_date(format = "%m/%d/%Y"), 
+                                                                               X3 = col_time(format = "%H:%M"), 
+                                                                               X6 = col_skip(), 
+                                                                               X7 = col_skip(), 
+                                                                               X8 = col_skip(), 
+                                                                               X9 = col_skip()), skip = 1)
+#import from refined local files
+ds_02 <- read_delim("C:/Users/Valentina/OneDrive/Data collection, storage and management/Data/10350004_01.csv", 
+                      ";", escape_double = FALSE, col_types = cols(date = col_date(format = "%Y-%m-%d"), 
+                      hm = col_time(format = "%AT")), trim_ws = TRUE)
+
+#-----SUMMARIES-----#
+summary(ds_00)
+str(ds_00)
+
+summary(ds_01)
+str(ds_01)
+
+summary(ds_02)
+str(ds_02)
+
+#-----Fixing table-----#
+#FIXING TIME
+t1<- mdy_hms(ds_00$`date,hm`)
+head(t1)
+hm<- data.frame(Time = format(t1, "%H:%M"))
+date<-data.frame(Date = format(t1, "%Y-%m-%d"))
+
+#deleting comun
+a1<-data.frame(ds_00$id)
+a2<-data.frame(ds_00$ta)
+a3<-data.frame(ds_00$lux)
+
+#NEW Table
+df_00<-data.frame(a1,date,hm,a2,a3,)
+colnames(df_00) <- c("id","date","hm","ta","lux")
+
+
+#Deleting rows
+df_00[df_00[["date"]] = "2020-01-07", ]
+df_00<-df_00 %>% filter(date != "2020-01-07")
+
+
+
+#-----FILTERS-----#
+
+
+
+
+
+
+#-----PLOTS-----#
+
+
+#-----EXPORT DATA-----#
+write.table(ds_00, file='10350004_00.tsv', quote = FALSE, sep = '\t', row.names = FALSE ,col.names = TRUE)
+export(ds_00,"10350004_00.xlsx")
+
+write.table(ds_01, file='10350004_01.tsv', quote = FALSE, sep = '\t', row.names = FALSE ,col.names = TRUE)
+export(ds_01,"10350004_01.xlsx")
+
+write.table(ds_02, file='10350004_02.tsv', quote = FALSE, sep = '\t', row.names = FALSE ,col.names = TRUE)
+export(ds_02,"10350004_02.xlsx")
+
