@@ -1,0 +1,24 @@
+# Previous in the texteditor: change space to comma, deleting first row, name the columns: id, date, hm, delete1, ta, lux, delete2, delete3, delete4, delete5
+
+df <- read.table("D:/Dokumente/Uni/Master/1_Semester/4_Data_Management_and_Storage/HoboRaw.txt", sep=',', header = T)
+
+# Datumsvormat ändern von PM/AM zu 24 hr
+df$x <- paste(df$hm,df$delete1)
+
+#Uhrzeit ohne Sekunden
+df$hm <- format(strptime(df$x, "%I:%M:%S %p"), format="%H:%M")
+
+df$delete1 <- NULL
+df[,6:10] <- NULL
+df[1] <- NULL # ID rauslöschen weil er beim Exportieren von selbst eine Spalte dafür macht
+
+# Datumsformat ändern
+df$date <- format(strptime(as.character(df$date), "%m-%d-%Y"), format="%Y-%m-%d")
+
+# Tabstopp getrennt abspeichern
+write.table(df, file="D:/Dokumente/Uni/Master/1_Semester/4_Data_Management_and_Storage/10610853_test.tsv", sep="\t")
+
+# In texteditor: Deleting ", adding the header
+
+# wieder einlesen
+df2 <- read.table("D:/Dokumente/Uni/Master/1_Semester/4_Data_Management_and_Storage/10610853.tsv", sep='\t', header = T, skip = 5)
