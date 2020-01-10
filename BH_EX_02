@@ -1,0 +1,265 @@
+# ___________ Exercise 2 ____________________
+
+# Range of temperature:
+# max temp 14.325
+# min temp -1.684
+# Plausible values
+
+
+
+# ______QC1__________
+
+# rate of change in 10 min
+
+library(dplyr)
+
+Diff <- df2$ta - lead(df2$ta)
+Diff2 <- df2$ta - lag(df2$ta)
+
+
+# Quality Check: Vector mit 1 für zu schnelle Änderung, 0 für alles ok
+
+qc1 <- numeric(3456)
+for (i in 2:3456) { # 1 not included bc of NA
+  if(abs(Diff2[i])>1){
+    qc1[i] <- 1
+  } 
+}
+# sum(qc1) # 8 
+
+# _______QC2___________
+
+# Minimum variability (Persistence) : in 60 min at least 0.1 K variance
+
+Diff3 <- df2$ta - lag(df2$ta, 5) # one hour earlier
+Diff5 <- df2$ta - lag(df2$ta, 4)
+Diff6 <- df2$ta - lag(df2$ta, 3)
+Diff7 <- df2$ta - lag(df2$ta, 2)
+
+
+Diff8 <- abs(Diff2) + abs(Diff3) + abs(Diff5) + abs(Diff6) + abs(Diff7)
+Pos <- which(Diff8 %in% c("0")) # gibt alle Positionen
+
+
+qc2 <- numeric(3456)
+for (i in 1:length(Pos)) {
+  qc2[Pos[i]] <- 1
+}
+
+# 71 flags
+
+
+# __________Lux_______________
+
+
+# Overwrite light intensity in the night as 0, so only the sunlight counts
+#37:109 -> day, 73 entries
+#110:180 -> night, 71 entries
+# i overwrite the period from 18:10 to 5:50 o'clock
+
+df2$lux2 <- df2$lux
+for(i in 0:22) { # 24 days in the hole period, but at beginning and end is the night cutted
+  df2$lux2[(110:180)+i*144] <- 0 #144 * 10 min = a hole day
+}
+
+# no lux in the first and last night -> no change
+# sum(df2$lux2 - df2$lux) # 0 -> no differences, no lux in night at all 
+
+#__________QC3________________
+
+
+# Range of light intensity
+# min(df2$lux) #0 -> good
+# max(df2$lux) #max light:  1636.1 -> not directly in the sun :)
+
+# 99 % light: 1619.739 -> L2
+# 95 percentil: 1554.295 -> L1
+
+df2$ta[df2$lux>1619.739]
+# [1] 10.846 12.207 12.497  3.893  0.343  9.768
+
+df2$ta[df2$lux>1554.295]
+# 10.846 12.207 12.497  3.893  0.343  9.768
+
+# Here, there are 6 lux values with 1636.1 -> a bit weird...  L2 and L1 include the same values
+df2$lux[df2$lux>1554.295]
+sum(df2$lux == 1636.1)
+#[1] 6
+
+
+# plot lux with temp to see if the temp is increasing strong with the high lux numbers
+plot(df2$lux, type="n", ylab="Lux")
+lines(df2$lux, type="l")
+par(new = TRUE)
+plot(df2$ta, type="l", col="red", xaxt = "n", yaxt = "n", ylab = "", xlab = "")
+axis(side = 4)
+mtext("Temperature", side = 4, line = 3)
+# Temp is not very high for high luxes 
+
+# plot(df2$lux ~ df2$ta) # relationship lux and temp
+
+# Positions of high Lux values
+Pos3 <- which(df3$lux %in% c("1636.1")) 
+
+
+# Sort your data_frame with descending Lux values (i.e. %>% arrange(...)) and investigate 
+# the temperature values (and step changes…) for the Top-10, Top-50, Top-100 Lux values.
+
+df3 <- as_tibble(df2[,-6])
+df4 <- df3 %>% arrange(desc(lux)) # lux is stepwise, temp  not over 12.5 C
+
+
+qc3 <- numeric(3456)
+for (i in 1:3456) {
+  if (df3$lux[i]==1636.1) {
+    qc3[i] <- 1
+  }
+}
+
+
+# flag around the high flux value
+
+library(zoo)
+qc31 <- numeric(3456)
+qc31 <- rollapply(qc3, 5, align = "center", FUN = sum) # zwei links davon, zwei rechts davon flaggen
+
+# achtung: Mein pc31 ist 4 Einträge zu kurz. Warum passiert das?
+qc31 <- c(qc31, 0,0,0,0) # nicht schön, aber hilft mir...
+
+# Setting values over 1 to 1
+
+for (i in 1:3456) { 
+  if (qc31[i]>0) {
+    qc31[i] <- 1
+  }
+}
+
+# wieder in qc3 umbenennen
+qc3 <- qc31
+
+
+# 6 flags (+ 2 davor und danach!)
+# insg. dann 26 flags (30 - 4 "doppelte")
+
+#_____________QC_total_________________
+
+qc_total <- numeric(3456)
+for (i in 1:3456) {
+  qc_total[i] <- sum(qc1[i]+qc2[i]+qc31[i])
+}
+
+# 1 if there is any flag in one of the qc -> actually dont need it, because max(qc_total) is 1
+qc_total2 <- numeric(3456)
+for (i in 1:3456) {
+  if (sum(qc1[i]+qc2[i]+qc3[i])!=0) {
+  qc_total2[i] <- 1
+  }
+}
+
+
+# For each quality check a new column
+df5 <- cbind(df3, qc1)
+df5 <- cbind(df5, qc2)
+df5 <- cbind(df5, qc3)
+df5 <- cbind(df5, qc_total)
+
+
+# __________aggregate to hourly data_________________
+
+# more than one 10 min slot flagged -> delete hole hour
+
+# vector with failed hours
+FAILhours <- numeric(576)
+cnt <- 1
+for (i in seq(1, 3456, 6)) {
+  if(sum(qc_total2[(i:(i+5))]) > 1){
+    FAILhours[cnt] <- 1
+  }
+  cnt <- cnt +1
+}
+
+
+# Gemittelte Stundenwerte -> 0 bis 0:50 uhr wird zu 0 Uhr
+hTemp <- numeric(576)
+cnt <- 1
+for (i in seq(1, 3456, 6)) {
+    hTemp[cnt] <- mean(df3$ta[(i:(i+5))])
+    cnt <- cnt +1
+}
+
+# NAs einfügen für geflaggte Stunden
+for (i in 1:576) {
+  if (FAILhours[i]==1) {
+    hTemp[i] <- NA
+  }
+}
+
+
+#___________________________Regression______________________________
+
+
+# Other stations
+WBI <- read.table("D:/Dokumente/Uni/Master/1_Semester/4_Data_Management_and_Storage/Referenzdaten/WBI/WBI_Temp.txt", sep='\t', header = T)
+DWD_urban <- read.table("D:/Dokumente/Uni/Master/1_Semester/4_Data_Management_and_Storage/Referenzdaten/13667/air_temperature_13667_akt.txt", sep='\t', header = T)
+DWD_flugplatz <- read.table("D:/Dokumente/Uni/Master/1_Semester/4_Data_Management_and_Storage/Referenzdaten/1443/temp_01443.txt", sep='\t', header = T)
+
+
+# Plot von WBI und Hobo mit y=x Linie als over/underestimation Vergleich
+plot(hTemp, WBI$AVG_TA200)
+abline(a=0, b=1, col="Red")
+
+lm1 <- lm(hTemp ~ WBI$AVG_TA200) # WBI a bit colder than my hobo on low temps?
+summary(lm1) # Multiple R-squared:  0.9792 <- am besten
+
+
+# Plot von DwD urban und Hobo
+plot(hTemp, DWD_urban$LUFTTEMPERATUR)
+abline(a=0, b=1, col="Red")
+
+lm2 <- lm(hTemp ~ DWD_urban$LUFTTEMPERATUR)
+summary(lm2) # Multiple R-squared:  0.9472
+
+
+# Plot von DwD Flugplatz und Hobo
+plot(hTemp, DWD_flugplatz$TT_TU)
+abline(a=0, b=1, col="Red") # looks like Flugplatz is much cooler on the lower temps
+
+lm3 <- lm(hTemp ~ DWD_flugplatz$TT_TU)
+summary(lm3) # Multiple R-squared:  0.9505
+
+
+# Prediction with WBI
+predictions <- as.numeric(coef(lm1)[1]) + as.numeric(coef(lm1)[2]) * WBI$AVG_TA200 
+# intersect is 1.00947 and slope 0.90691 
+
+
+# filling predictions in NAs, generating vector with "H" for origin data and "R" for replaced data
+
+origin <- rep("H", 576)
+
+for (i in 1:576) {
+  if (is.na(hTemp[i])) {
+    hTemp[i] <- predictions[i]
+    origin[i] <- "R"
+  }
+}
+
+th <- round(hTemp, digits = 3)
+
+# Hour vector
+hour <- rep(00:23, 24)
+hour <- formatC(hour, width=2, flag=0) # set width of 2 for leading zero for numbers below 10
+
+# Date vector
+date_p <- seq.Date(from= as.Date("2019-12-14", format = "%Y-%m-%d"), to= as.Date("2020-01-06", format = "%Y-%m-%d"), by=1)
+
+cnt <- 1
+date <- rep(as.Date("2019-12-14", format = "%Y-%m-%d"),576)
+for (i in seq(1, 576, 24)) {
+  date[i:(i+23)] <- date_p[cnt]
+  cnt <- cnt + 1
+}
+
+hobo_Th <- data.frame(date, hour, th, origin)
+
+write.table(hobo_Th, file="D:/Dokumente/Uni/Master/1_Semester/4_Data_Management_and_Storage/10610853_Th_test.tsv", sep="\t", row.names = F)
