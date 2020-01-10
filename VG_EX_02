@@ -1,0 +1,165 @@
+library(readr)
+library(dplyr)
+library(tidyr)
+library("rio")
+install_formats()#formats for use  "rio"
+library(lubridate)
+library(zoo)
+library(ggplot2)
+library(reshape2)
+library("datasets")
+library(flextable)#for doc.file 
+
+
+#clean
+rm(list = ls())
+#---------------------------------------------------#
+
+# EXERCISE 01 RAW FILE
+
+#---------------------------------------------------#
+
+
+#-----import data direct from web-----#
+ds_00 <- read_csv("https://raw.githubusercontent.com/data-hydenv/data/master/hobo/2020/_00raw/10350004.csv", 
+                  col_names = c("id","date,hm","ta","lux"), col_types = cols(X2 = col_datetime(format = "%m/%d/%Y, %H:%M:%S"), 
+                                                                             X5 = col_skip(), X6 = col_skip(), 
+                                                                             X7 = col_skip(), X8 = col_skip(), 
+                                                                             X9 = col_skip()), skip = 2)
+
+#----- Fixing table -----#
+
+#FIXING TIME
+t1<- mdy_hms(ds_00$`date,hm`)
+#head(t1)
+
+hm<- data.frame(Time = format(t1, "%H:%M"))
+date<-data.frame(Date = format(t1, "%Y-%m-%d"))
+
+#deleting comun
+a1<-data.frame(ds_00$id)
+a2<-data.frame(ds_00$ta)
+a3<-data.frame(ds_00$lux)
+
+#NEW Table
+df_00<-data.frame(a1,date,hm,a2,a3)
+colnames(df_00) <- c("id","date","hm","ta","lux")
+
+
+#Deleting rows
+df_00[df_00[["date"]] == "2020-01-07", ]
+df_00<-df_00 %>% filter(date != "2020-01-07")
+
+#summary(df_00)
+#str(df_00)
+
+#----- EXPORT DATA -----#
+#enabled only for Exercise 01
+#write.table(df_00, file='10350004_00.tsv', quote = FALSE, sep = '\t', row.names = FALSE ,col.names = TRUE)
+
+
+#---------------------------------------------------#
+
+# EXERCISE 02 QUALITY CONTROL
+
+#---------------------------------------------------#
+
+
+#----------MEASUREMENT RANGE (PLAUSIBLE VALUES)----------#
+
+# Range of expected values for temperature -20<ta<70
+q1 <- ifelse (70 > df_00$ta | -20 < df_00$ta, 0, 1 )
+
+#adding q1 to the data frame
+df_00<-data.frame(df_00,q1)
+
+#----------PLAUSIBLE RATE OF CHANGE----------#
+
+#check that the change is no more than 1K between datapoints
+k<- 1
+
+#difference with the value beore
+d <-abs(df_00$ta - lag(df_00$ta, 1))
+
+#compare with the one before, if there is no value, replae with a 0
+q2 <- if_else( d-k >  0 , 1 , 0, missing = 0)
+
+#adding q2 to the data frame
+df_00<-data.frame(df_00,q2)
+
+#----------MINIMUN VARIABILITY (PERSISTENCE)----------#
+
+#temperature hasn't changed in the last 60 min
+
+q3<- if_else( d2 + (   lag(d2,1)
+                      +lag(d2,2)
+                      +lag(d2,3)
+                      +lag(d2,4)
+                      +lag(d2,5)) == 0, 1, 0, missing = 0)
+
+#adding q2 to the data frame
+df_00<-data.frame(df_00,q3)
+
+#----------LIGHT INTENSITY----------#
+
+#setting daytime
+tnv_1<- lubridate::hm(df_00$hm)
+tnv_2<- as.numeric(tnv_1)
+
+# overwrite as 0 all the values 0> that are outside daytime
+daytime<-df_00$lux
+df_00$lux<-if_else( (17 >=tnv_1@hour) &  (7 <= tnv_1@hour), daytime , 0 )
+
+
+#light threshold
+l1<- as.numeric(quantile(df_00$lux, .95))
+l2<- as.numeric(quantile(df_00$lux, .99))
+
+#checking which points have lux>l1 and lux>l2 only when is daytime (dt)
+q_l1<-if_else(df_00$lux>l1,1,0,0)
+q_l2<-if_else(df_00$lux>l2,1,0,0)
+
+#--- LUX > L1 
+df_00<- df_00 %>% mutate( pq4_l1 = if_else(q_l1==1, 1, 0)) %>% 
+mutate( q4_l1 = rollapply(q_l1, 3 , FUN = sum , align = "center", fill = NA))
+
+#--- LUX > L2 
+df_00<- df_00 %>% mutate( pq4_l2 = if_else(q_l2==1, 1, 0)) %>% 
+mutate( q4_l2 = rollapply(q_l2, 7 , FUN = sum , align = "center", fill = NA))
+
+#FILLING MISSING VALUES IN q4_l1 AND q4_l2
+
+df_00$q4_l1[is.na(df_00$q4_l1)] <- 0
+df_00$q4_l2[is.na(df_00$q4_l2)] <- 0
+
+#deleting the columns pq4_l1 and pq4_l2
+df_00$pq4_l1<- NULL
+df_00$pq4_l2<- NULL
+
+#Adding light threesholds
+q4l<-c(df_00$q4_l1+df_00$q4_l2)
+table(q4l)
+
+#adding to the dataframe to compare
+df_00<-data.frame(df_00, q4l)
+
+#replace q4l>1 for 1 to add them to the fourth quality check control (q4)
+q4<- if_else(q4l>1, 1 , q4l )
+
+#adding q4 to the data frame
+df_00<- data.frame(df_00,q4)
+
+#deleting the columns q4_l1, q4_l2 and q4l
+df_00$q4_l1<- NULL
+df_00$q4_l2<- NULL
+df_00$q4l<- NULL
+
+#calculating the total amount of flags per data point
+qt<-c(q1+q2+q3+q4)
+table(qt)
+
+#-----NEW TABLE-----#
+
+df_01<-data.frame(df_00,qt)
+
+#----------FLAGGING SYSTEM TO IDENTIFY BAD DATA----------#
