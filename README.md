@@ -1,7 +1,7 @@
 # Data-Collection-Storage-and-Management
 All the exercises from DCSM 
 Upload your exercises code in the following way:
-NL_EX_n
+NL_EX_0n
 where:
 N<- name first letter
 L<-last name first letter
