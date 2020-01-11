@@ -26,6 +26,8 @@ names(df4) <- c("id", "date", "hm", "ta", "lux")
 df4 # = .tsv data with 'hm' without seconds
 
 
+
+
 #-----------------------------------------------------
 # 1 Quality Control
 #-----------------------------------------------------
@@ -71,7 +73,6 @@ df8$qc2[is.na(df8$qc2)] <- 0
 df9 <- df8[,c(1,2,3,4,5,6,8,7)] %>% select(-diff_ta)
 
 
-
 #------------------------------------------
 # 1.3 Minimum variability (Persistence)
 #------------------------------------------
@@ -99,7 +100,6 @@ sum(df10$qc3)
 
 # rearrange table
 df11 <- df10[,c(1,2,3,4,5,6,7,9,8)]
-
 
 
 #------------------------------------------
@@ -192,18 +192,222 @@ df15 <- df15[c(1:100), c(1:10)]
 
 
 
+
+
 #-----------------------------------------------------
 # 2 Flagging System to Identify Bad Data
 #-----------------------------------------------------
 
 # subset coloumns qc1 to qc5
-# df16 <- df14[c(1:3456), c(6:10)]
-# df14$qc_total <- cbind(df16, total = rowSums(df16))
+df16 <- df14[c(1:3456), c(6:10)]
 
-# df17 <- df14 %>% select(-qc_total.qc1) %>% select(-qc_total.qc2) %>% 
-                  # select(-qc_total.qc3) %>% select(-qc_total.qc4) %>% select(-qc_total.qc5)
+# sum up all qc rows
+df16 <- df14 %>% mutate(rowSums(df16))
+
+names(df16) <- c("id", "date", "hm", "ta", "lux", "qc1", "qc2", "qc3", "qc4", "qc5", "qc_total")
+
+
+# Flag statistics per quality check
+qc1_count <- length(which(df16$qc1 == 1))
+qc1_count # 0
+qc1_perc <- qc1_count / 3456
+qc1_perc
+
+qc2_count <- length(which(df16$qc2 == 1))
+qc2_count # 32
+qc2_perc <- qc2_count / 3456
+qc2_perc
+
+qc3_count <- length(which(df16$qc3 == 1))
+qc3_count # 0
+qc3_perc <- qc3_count / 3456
+qc3_perc
+
+qc4_count <- length(which(df16$qc4 == 1))
+qc4_count # 216
+qc4_perc <- qc4_count / 3456
+qc4_perc
+
+qc5_count <- length(which(df16$qc5 == 1))
+qc5_count # 95
+qc5_perc <- qc5_count / 3456
+qc5_perc
+
+qc_table <- matrix(c(1,0,2,32,3,0,4,216,5,95), ncol = 2, byrow = TRUE)
+colnames(qc_table) <- c("Quality Check", "Number of flags")
+qc_table <- as.table(qc_table)
+qc_table
+
+
+# Aggregation to hour if qc_total <= 1 of one hour; if qc_total >= 2 of one hour then no aggregation
+
+# 1: identify qc_total <= 1 and >= 2 for hour and mark as 1 or 0
+df17 <- df16 %>% mutate(hour = format(a1, '%H')) %>% 
+                  group_by(date, hour) %>% 
+                    summarise(ta = mean(ta), lux = mean(lux), qc_total_sum = sum(qc_total)) %>%
+                        ungroup()
+
+df18 <- df17 %>% mutate(qc_result = if_else(df17$qc_total_sum <= 1, 1, 0, 0))
+
+library(naniar)
+df19 <- df18 %>% replace_with_na(replace = list(qc_result = 0)) %>% 
+                   mutate(origin = qc_result)
+
+# replace values of "1" in origin to "H" and from "NA" to "R"
+df19$origin[df19$origin == 1] <- "H"
+df19$origin[is.na(df19$origin)] <- "R"
+
+# replace ta_hobo values with NA that are NA in qc_result
+df19$ta <- ifelse(is.na(df19$qc_result), NA, df19$ta)
+sum(is.na(df19$ta)) # 47
 
 
 
 
+
+#-----------------------------------------------------
+# 3 Filling Gaps with Regression Model
+#-----------------------------------------------------
+
+#------------------------------------------
+# 3.1 Reference Stations
+#------------------------------------------
+
+# Import WBI data --> distance to df19: 1.86 km
+WBI <- read_delim("WBI.csv", ";", escape_double = FALSE, 
+                  trim_ws = TRUE,)
+
+# Import DWD 1443 -> distance to df19: 2.99 km
+DWD_1443 <- read_delim("DWD 1443.txt", ";", 
+                       escape_double = FALSE, trim_ws = TRUE)
+
+# Import DWD 13667 --> distance to df19: 1.35 km
+DWD_13667 <- read_delim("DWD 13667.txt", 
+                        ";", escape_double = FALSE, trim_ws = TRUE)
+
+# Create tables like df19
+wbi <- WBI %>% mutate(df19$date) %>% 
+                select(-Tag) %>% 
+                  mutate(df19$hour) %>% 
+                    select(-Stunde)
+wbi <- wbi[,c(2,3,1)]
+names(wbi) <- c("date", "hour", "ta")
+
+dwd_1443 <- DWD_1443 %>% mutate(df19$date) %>% 
+                          mutate(df19$hour) %>% 
+                            select(-MESS_DATUM, -STATIONS_ID, -QN_9, -RF_TU, -eor)
+dwd_1443 <- dwd_1443[,c(2,3,1)]
+names(dwd_1443) <- c("date", "hour", "ta")
+
+dwd_13667 <- DWD_13667 %>% mutate(df19$date) %>% 
+                            mutate(df19$hour) %>% 
+                              select(-STATIONS_ID, -MESS_DATUM, -QUALITAETS_NIVEAU, 
+                                        -STRUKTUR_VERSION, -REL_FEUCHTE, -eor)
+dwd_13667 <- dwd_13667[,c(2,3,1)]
+names(dwd_13667) <- c("date", "hour", "ta")
+
+rm(DWD_13667, DWD_1443, WBI)
+
+# create dataframe for linear model
+model_data <- select(df19, date, hour, ta_hobo = ta) %>% 
+                mutate(ta_wbi = wbi$ta) %>% 
+                  mutate(ta_dwd_1443 = dwd_1443$ta) %>% 
+                    mutate(ta_dwd_13667 = dwd_13667$ta)
+
+
+#------------------------------------------
+# 3.2 Regression Model
+#------------------------------------------
+
+library(stats)
+par(mfrow = c(2,2))
+model1 <- lm(data = model_data, ta_hobo ~ ta_wbi, na.action = na.exclude)
+summary(model1) # R^2 = 0.9484 
+plot(x = model_data$ta_wbi, y = model_data$ta_hobo, 
+     main = "Linear Regression Model for HOBO Temperature ~ WBI Temperature", 
+        xlab = "WBI Temperature", 
+            ylab = "HOBO Temperature")
+abline(a = 0, b = 1, col = "red")
+
+model2 <- lm(data = model_data, ta_hobo ~ ta_dwd_1443, na.action = na.exclude)
+summary(model2) # R^2 = 0.8637
+plot(x = model_data$ta_dwd_1443, y = model_data$ta_hobo,
+    main = "Linear Regression Model for HOBO Temperature ~ DWD_1443 Temperature", 
+        xlab = "DWD_1443 Temperature", 
+            ylab = "HOBO Temperature")
+abline(a = 0, b = 1, col = "red")
+
+#-----------------
+# model3 = best model --> highest R^2
+#-----------------
+model3 <- lm(data = model_data, ta_hobo ~ ta_dwd_13667, na.action = na.exclude)
+summary(model3) # R^2 = 0.9605
+plot(x = model_data$ta_dwd_13667, y = model_data$ta_hobo,
+    main = "Linear Regression Model for HOBO Temperature ~ DWD_13667 Temperature", 
+        xlab = "DWD_13667 Temperature", 
+            ylab = "HOBO Temperature")
+abline(a = 0, b = 1, col = "red")
+
+
+# ?residuals
+# residual = difference between prediction of model and the actual value of ta_hobo
+# calculate residuals of model3 by subtracting ta_hobo of the fitted values of model3
+summary(model_data$ta_hobo - model3$fitted.values)
+
+# 0% indicates that the model explains none of the variability of the 
+# response data around its mean.
+# 100% indicates that the model explains all the variability of the 
+# response data around its mean.
+
+# plot model_data
+ggplot(data = model_data) + 
+  geom_line(aes(x = date, y = ta_hobo), col = "red") +
+    geom_line(aes(x = date, y = ta_wbi), col = "blue") +
+      geom_line(aes(x = date, y = ta_dwd_1443), col = "green") +
+        geom_line(aes(x = date, y = ta_dwd_13667), col = "black") +
+          theme_light()
+
+# extract intercept and slope value from model3
+coef(model3)
+model3_intercept <- coef(model3)[1]
+model3_intercept
+model3_slope <- coef(model3)[2]
+model3_slope
+
+# prediction formula data --> = NA values from ta_hobo
+# predict_formula <- as.numeric(model3_intercept) + as.numeric(model3_intercept) * model_data$ta_dwd_13667
+# predict_formula
+# ERROR --> values way to high: up to 21 ° Celsius
+
+# predict NA values in ta_hobo with model3 data
+model_data$pred <- predict(model3, newdata = model_data)
+
+# replace NAs with predictions from model3
+model_data$interp <- ifelse(is.na(model_data$ta_hobo), model_data$pred, model_data$ta_hobo)
+
+# plot existing and interpolated data
+ggplot() +
+  geom_point(data = model_data, aes(date, ta_hobo), size = 4) +
+      geom_point(data = model_data, aes(date, interp), col = "red")
+
+#plot model, hobo and dwd_13667 data
+ggplot() +
+  geom_line(data = model_data, aes(date, pred), col = "black") +
+    geom_line(data = model_data, aes(date, ta_hobo), col = "red") +
+      geom_line(data = model_data, aes(date, ta_dwd_13667), col = "blue")
+
+
+
+
+
+#-----------------------------------------------------
+# 4 Upload Hourly Series
+#-----------------------------------------------------
+
+df20 <- select(model_data, date, hour) %>% 
+          mutate(origin = df19$origin) %>% 
+            mutate(th = round(model_data$interp, digits = 3))
+df20 <- df20[,c(1,2,4,3)]
+
+write_tsv(df2, "C:/Users/Patrick Kacic/Documents/Environmental Sciences/1. Semester/Data Storage, Collection, Management/10347386_Th.tsv")
 
