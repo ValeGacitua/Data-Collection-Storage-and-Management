@@ -1,53 +1,32 @@
-library(readr)
-library(dplyr)
-library(tidyr)
-library("rio")
-install_formats()#formats for use  "rio"
-library(lubridate)
-library(zoo)
-library(ggplot2)
-library(reshape2)
-library("datasets")
-library(flextable)#for doc.file 
-
-
-#clean
-rm(list = ls())
 #---------------------------------------------------#
 
 # EXERCISE 01 RAW FILE
 
 #---------------------------------------------------#
 
-
-#-----import data direct from web-----#
-ds_00 <- read_csv("https://raw.githubusercontent.com/data-hydenv/data/master/hobo/2020/_00raw/10350004.csv", 
+#-----import data direct from web-----
+df_00 <- read_csv("https://raw.githubusercontent.com/data-hydenv/data/master/hobo/2020/_00raw/10350004.csv", 
                   col_names = c("id","date,hm","ta","lux"), col_types = cols(X2 = col_datetime(format = "%m/%d/%Y, %H:%M:%S"), 
                                                                              X5 = col_skip(), X6 = col_skip(), 
                                                                              X7 = col_skip(), X8 = col_skip(), 
                                                                              X9 = col_skip()), skip = 2)
 
-#----- Fixing table -----#
+#----- Fixing table -----
 
 #FIXING TIME
-t1<- mdy_hms(ds_00$`date,hm`)
+t1<- mdy_hms(df_00$`date,hm`)
 #head(t1)
 
-hm<- data.frame(Time = format(t1, "%H:%M"))
-date<-data.frame(Date = format(t1, "%Y-%m-%d"))
+hm<- data.frame(hm = format(t1, "%H:%M"))
 
-#deleting comun
-a1<-data.frame(ds_00$id)
-a2<-data.frame(ds_00$ta)
-a3<-data.frame(ds_00$lux)
+date<-data.frame(date = format(t1, "%Y-%m-%d"))
 
 #NEW Table
-df_00<-data.frame(a1,date,hm,a2,a3)
-colnames(df_00) <- c("id","date","hm","ta","lux")
-
+df_00 <-data.frame(df_00, date, hm)
+df_00 <- df_00[ c(1,5,6,3,4,2)]
+df_00$date.hm<-NULL
 
 #Deleting rows
-df_00[df_00[["date"]] == "2020-01-07", ]
 df_00<-df_00 %>% filter(date != "2020-01-07")
 
 #summary(df_00)
@@ -60,12 +39,12 @@ df_00<-df_00 %>% filter(date != "2020-01-07")
 
 #---------------------------------------------------#
 
-# EXERCISE 02 QUALITY CONTROL
+#EXERCISE 02 QUALITY CONTROL
 
 #---------------------------------------------------#
 
 
-#----------MEASUREMENT RANGE (PLAUSIBLE VALUES)----------#
+#----------MEASUREMENT RANGE (PLAUSIBLE VALUES)----------
 
 # Range of expected values for temperature -20<ta<70
 q1 <- ifelse (70 > df_00$ta | -20 < df_00$ta, 0, 1 )
@@ -73,7 +52,7 @@ q1 <- ifelse (70 > df_00$ta | -20 < df_00$ta, 0, 1 )
 #adding q1 to the data frame
 df_00<-data.frame(df_00,q1)
 
-#----------PLAUSIBLE RATE OF CHANGE----------#
+#----------PLAUSIBLE RATE OF CHANGE----------
 
 #check that the change is no more than 1K between datapoints
 k<- 1
@@ -81,26 +60,27 @@ k<- 1
 #difference with the value beore
 d <-abs(df_00$ta - lag(df_00$ta, 1))
 
+
 #compare with the one before, if there is no value, replae with a 0
 q2 <- if_else( d-k >  0 , 1 , 0, missing = 0)
 
 #adding q2 to the data frame
 df_00<-data.frame(df_00,q2)
 
-#----------MINIMUN VARIABILITY (PERSISTENCE)----------#
+#----------MINIMUN VARIABILITY (PERSISTENCE)----------
 
 #temperature hasn't changed in the last 60 min
 
-q3<- if_else( d2 + (   lag(d2,1)
-                      +lag(d2,2)
-                      +lag(d2,3)
-                      +lag(d2,4)
-                      +lag(d2,5)) == 0, 1, 0, missing = 0)
+q3 <- if_else( d + (  lag(d,1)
+                      +lag(d,2)
+                      +lag(d,3)
+                      +lag(d,4)
+                      +lag(d,5)) == 0, 1, 0, missing = 0)
 
 #adding q2 to the data frame
 df_00<-data.frame(df_00,q3)
 
-#----------LIGHT INTENSITY----------#
+#----------LIGHT INTENSITY----------
 
 #setting daytime
 tnv_1<- lubridate::hm(df_00$hm)
@@ -138,7 +118,7 @@ df_00$pq4_l2<- NULL
 
 #Adding light threesholds
 q4l<-c(df_00$q4_l1+df_00$q4_l2)
-table(q4l)
+#table(q4l)
 
 #adding to the dataframe to compare
 df_00<-data.frame(df_00, q4l)
@@ -155,11 +135,141 @@ df_00$q4_l2<- NULL
 df_00$q4l<- NULL
 
 #calculating the total amount of flags per data point
-qt<-c(q1+q2+q3+q4)
-table(qt)
+qc_total<-c(q1+q2+q3+q4)
+#table(qc_total)
 
 #-----NEW TABLE-----#
 
-df_01<-data.frame(df_00,qt)
+df_01<-data.frame(df_00,qc_total)
+str(df_01)
 
-#----------FLAGGING SYSTEM TO IDENTIFY BAD DATA----------#
+#----------FLAGGING SYSTEM TO IDENTIFY BAD DATA----------
+
+# build a column to flag with a big number those data points where qc_total > 1 
+df_01 <- df_01 %>%
+  mutate(qf = if_else(qc_total==2, 100, 0))
+
+# change hour data to build a new table with the hourly average
+
+#hour:minute
+df_01$hm<-as.POSIXct(df_01$hm, format = "%H:%M")
+#new hour format
+hm_1<- hour(df_01$hm)
+#table with new hour format
+df_01<- data.table(df_01, hm_1)
+
+# NEW TABLE with hourly average 
+df_02<-df_01[,list(ta_avg = mean(ta), lux_avg = mean(lux), qfb = mean(qf)), by = list(date, hm_1)]
+
+#overwrite NA in the temperature when the value is differente than 0 only in that data point
+df_02<- df_02 %>%
+  mutate(
+    ta_avg = case_when(
+      qfb  < 1 ~ ta_avg
+      
+      
+    )
+  )
+#Deleting the big flag column
+df_02$qfb<- NULL
+
+#add an id column
+df_02<- df_02 %>%
+        mutate(id = seq(length(df_02$hm_1)))
+
+#re organize columns
+df_02<- df_02[c(5,1,2,3,4)]
+
+#finally df_02 is a table with the hourly average and the NA values
+
+#----------IMPORTING NEW DATA----------
+
+df_WBI <- read_delim("C:/Users/Valentina/OneDrive/Data collection, storage and management/Data/WBI.csv", 
+                        ";", escape_double = FALSE, col_types = cols(AVG_TA200 = col_number(), 
+                        Stunde = col_time(format = "%H:%M")),      trim_ws = TRUE)
+
+df_1443 <- read_delim("C:/Users/Valentina/OneDrive/Data collection, storage and management/Data/DWD_1443.txt", 
+                            ";", escape_double = FALSE, col_types = cols(QN_9 = col_skip(), 
+                            RF_TU = col_skip(), STATIONS_ID = col_skip(), eor = col_skip()), trim_ws = TRUE)
+df_1443<- df_1443[-c(1:12504),]
+df_1443<- df_1443[-c(577:696),]
+
+df_13667 <- read_delim("C:/Users/Valentina/OneDrive/Data collection, storage and management/Data/DWD_13667.txt", 
+                       ";", escape_double = FALSE, col_types = cols(QUALITAETS_NIVEAU = col_skip(), 
+                        REL_FEUCHTE = col_skip(), STATIONS_ID = col_skip(), 
+                        STRUKTUR_VERSION = col_skip(), eor = col_skip()), trim_ws = TRUE)
+df_13667<- df_13667[-c(1:13133),]
+df_13667<- df_13667[-c(577:697),]
+
+
+
+#table only with date, time and temperature on the different stations 
+df_s<- data.frame(df_02$id, df_02$date, df_02$hm, df_02$ta_avg, df_WBI$AVG_TA200, df_1443$TT_TU, df_13667$LUFTTEMPERATUR)
+df_s<-df_s %>%
+rename(id = df_02.id, date = df_02.date, hm = df_02.hm, ta_hobo = df_02.ta_avg,
+       ta_wbi = df_WBI.AVG_TA200, ta_1443 = df_1443.TT_TU, ta_13667 = df_13667.LUFTTEMPERATUR )
+str(df_s)
+
+# tmp values of wbi where without the comma...
+df_s$ta_wbi<-(df_s$ta_wbi/100)
+
+#---------------Linear model---------------
+
+#----- HOBO and Stations (df_s2)-----#
+df_s2 <-unite(df_s, date, hm, col = "dttm", sep = " ")
+
+#fixing date in a date_hour format
+df_s2$dttm<- ymd_h(df_s2$dttm)
+str(df_s2)
+
+#-----------Linear model WBI----------#
+lm2<-lm(ta_hobo ~ dttm + ta_wbi , data = df_s2)
+summary(lm2)
+plot(lm2)
+coef_wbi <- lm2$coefficients[3]
+plot(df_s2$ta_hobo,df_s2$ta_wbi)
+
+#Predicted value in a new column
+df_s2$pv2<- predict(lm2,newdata = df_s2)
+
+#-----------Linear model 1443----------#
+lm3<-lm(ta_hobo ~ dttm + ta_1443 , data = df_s2)
+summary(lm3)
+plot(lm3)
+coef_1443 <- lm3$coefficients[3]
+plot(df_s2$ta_hobo,df_s2$ta_1443)
+
+#Predicted value in a new column
+df_s2$pv3<- predict(lm3,newdata = df_s2)
+
+#-----------Linear model 13667----------#
+lm4<-lm(ta_hobo ~ dttm + ta_13667 , data = df_s2)
+summary(lm4)
+plot(lm4)
+coef_13667 <- lm4$coefficients[3]
+plot(df_s2$ta_hobo,df_s2$ta_13667)
+
+#Predicted value in a new column
+df_s2$pv4<- predict(lm4,newdata = df_s2)
+
+#---------------REPLACING VALUES AND MAKING THE NEW TABLE---------------
+# DWD 13667 has the highest coef -> p4 es the best option
+
+#Replace only NA with predicted values
+# ORIGIN HOBO (H) OR REGRESSION (R)
+df_s2$origin <- ifelse(is.na(df_s2$ta_hobo), "R", "H")
+
+#change the predicted value here if I want use another station
+df_s2$tmp <- if_else(is.na(df_s2$ta_hobo), df_s2$pv4, df_s2$ta_hobo)
+
+
+df_03<- data.frame(df_s$date,df_s$hm,df_s2$tmp,df_s2$origin)
+df_03<-df_03 %>%
+  rename(date = df_s.date, hour = df_s.hm, th = df_s2.tmp, origin = df_s2.origin )
+df_03$th<- round(df_03$th, 3)
+#----- EXPORT DATA -----#
+#enabled only for Exercise 02
+write.table(df_03, file='10350004_Th.tsv', quote = FALSE, sep = '\t', row.names = FALSE ,col.names = TRUE)
+
+
+
