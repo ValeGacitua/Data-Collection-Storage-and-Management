@@ -1,0 +1,401 @@
+library(readr)
+library(dplyr)
+library(tidyr)
+library("rio")
+install_formats()#formats for use  "rio"
+library(lubridate)
+library(zoo)
+library(ggplot2)
+library(reshape2)
+library(data.table)
+library("datasets")
+library(graphics)
+library(grDevices)
+library("colorspace")
+
+# THIS CODE IS THE REORGANIZED AND MORE PRETTY VERSION OF CODE_03
+#changes in the q4 flag, now there are less flags
+#new station is used to predict values
+# Code_04 was added to graph the historical averages
+
+#clean
+rm(list = ls())
+
+##------------------------------------DATA IMPORT------------------------------------
+
+# MY DATA
+df_1 <- read_delim("C:/Users/Valentina/OneDrive/Data collection, storage and management/Data/10350004_EX1.tsv", 
+                            "\t", escape_double = FALSE, trim_ws = TRUE, skip = 5)
+
+
+#DWI DATA
+df_WBI <- read_delim("C:/Users/Valentina/OneDrive/Data collection, storage and management/Data/WBI.csv", 
+                  ";", escape_double = FALSE, col_types = cols(AVG_TA200 = col_number(), 
+                  Stunde = col_time(format = "%H:%M")),      trim_ws = TRUE)
+
+# temperature values of wbi where without the comma
+df_WBI$AVG_TA200 <- df_WBI$AVG_TA200/100
+
+
+#DWD 13667 DATA
+df_13667<- read_delim("C:/Users/Valentina/OneDrive/Data collection, storage and management/Data/DWD_13667.txt", 
+                      ";", escape_double = FALSE, col_types = cols(MESS_DATUM = col_datetime(format = "%Y%m%d%H"), 
+                      QUALITAETS_NIVEAU = col_skip(), REL_FEUCHTE = col_skip(), STATIONS_ID = col_skip(), STRUKTUR_VERSION = col_skip(), 
+                      eor = col_skip()), trim_ws = TRUE)
+df_13667<- df_13667 %>% 
+           filter((year(MESS_DATUM)== 2019 & month(MESS_DATUM)==12 & day(MESS_DATUM)>=14 ) | year(MESS_DATUM)== 2020 & (month(MESS_DATUM)==1 & day(MESS_DATUM)<=6))
+
+
+
+#DWD 1443 DATA
+df_1443 <- read_delim("C:/Users/Valentina/OneDrive/Data collection, storage and management/Data/DWD_1443.txt", 
+           ";", escape_double = FALSE, col_types = cols(MESS_DATUM = col_datetime(format = "%Y%m%d%H"), 
+           QN_9 = col_skip(), RF_TU = col_skip(), STATIONS_ID = col_skip(), eor = col_skip()), 
+           trim_ws = TRUE)
+df_1443<- df_1443 %>% 
+  filter((year(MESS_DATUM)== 2019 & month(MESS_DATUM)==12 & day(MESS_DATUM)>=14 ) | year(MESS_DATUM)== 2020 & (month(MESS_DATUM)==1 & day(MESS_DATUM)<=6))
+
+##------------------------------------QUALITY CONTROL------------------------------------
+
+#----------MEASUREMENT RANGE (PLAUSIBLE VALUES)----------
+
+# Range of expected values for temperature -20<ta<70
+df_1$q1 <- ifelse (70 > df_1$ta | -20 < df_1$ta, 0, 1 )
+
+#----------PLAUSIBLE RATE OF CHANGE----------
+
+#check that the change is no more than 1K between datapoints
+k<- 1
+
+#difference with the value beore
+d <-abs(df_1$ta - lag(df_1$ta, 1))
+
+
+#compare with the one before, if there is no value, replae with a 0
+df_1$q2 <- if_else( d-k >  0 , 1 , 0, missing = 0)
+
+#----------MINIMUN VARIABILITY (PERSISTENCE)----------
+
+#temperature hasn't changed in the last 60 min
+
+df_1$q3 <- if_else( d + (  lag(d,1)
+                          +lag(d,2)
+                          +lag(d,3)
+                          +lag(d,4)
+                          +lag(d,5)) == 0, 1, 0, missing = 0)
+
+#----------LIGHT INTENSITY----------
+df_1<-df_1 %>%
+      unite(date, hm, col = "dttm", sep = " ")
+
+#hour as interger
+df_1$h_d<- hour(df_1$dttm)
+
+# overwrite as 0 all the values 0> that are outside daytime
+df_1$lux<-if_else( (17 >= df_1$h_d) &  (7 <= df_1$h_d), df_1$lux , 0 )
+
+
+#light threshold
+l1<- as.numeric(quantile(df_1$lux, .95))
+l2<- as.numeric(quantile(df_1$lux, .99))
+
+#checking which points have lux>l1 and lux>l2 only when is daytime (dt)
+q_l1<-if_else(df_1$lux>l1,1,0,0)
+q_l2<-if_else(df_1$lux>l2,1,0,0)
+
+#--- LUX > L1 
+df_1<- df_1 %>% mutate( pq4_l1 = if_else(q_l1==1, 1, 0)) %>% 
+  mutate( q4_l1 = rollapply(q_l1, 3 , FUN = sum , align = "center", fill = NA))
+
+#--- LUX > L2 
+df_1<- df_1 %>% mutate( pq4_l2 = if_else(q_l2==1, 1, 0)) %>% 
+  mutate( q4_l2 = rollapply(q_l2, 7 , FUN = sum , align = "center", fill = NA))
+
+#FILLING MISSING VALUES IN q4_l1 AND q4_l2
+
+df_1$q4_l1[is.na(df_1$q4_l1)] <- 0
+df_1$q4_l2[is.na(df_1$q4_l2)] <- 0
+
+#Adding light threesholds
+df_1$q4l<-c(df_1$q4_l1+df_1$q4_l2)
+
+#replace q4l>1 for 1 to add them to the fourth quality check control (q4)
+df_1$q4<- if_else(df_1$q4l > 1 , 1 , df_1$q4_l1)
+
+#deleting the columns pq4_l1 and pq4_l2
+df_1$pq4_l1<- NULL
+df_1$pq4_l2<- NULL
+
+#deleting the columns q4_l1, q4_l2 and q4l
+df_1$q4_l1<- NULL
+df_1$q4_l2<- NULL
+df_1$q4l<- NULL
+
+#calculating the total amount of flags per data point
+df_1$qc_total<-c(df_1$q1+df_1$q2+df_1$q3+df_1$q4)
+
+##------------------------------------FLAGGING SYSTEM TO IDENTIFY BAD DATA------------------------------------
+
+# change hour data to build a new table with the hourly average
+df_1<- as.data.table(df_1)
+df_1<- separate(df_1, dttm, into = c("date","hm"), sep = " ")
+#hourly average
+df_2<-df_1[,list(ta_avg = mean(ta), qt_sum=sum(qc_total)), by = list(date,h_d )]
+
+#hourly average second way to do it
+# df_2<- df_1 %>%
+#        group_by(date(dttm),h_d) %>%
+#        summarise(ta_avg = mean(ta),qt_sum = sum(qc_total))
+
+#overwrite NA in the temperature when the value is differente than 0 only in that data point
+df_2<- df_2 %>%
+  mutate(
+    ta_avg = case_when(
+      qt_sum  < 2 ~ ta_avg
+      
+      
+    )
+  )
+
+#add an id column
+df_2$id <- seq(length(df_2$h_d))
+
+#re organize columns
+df_2 <- df_2[c(5,1,2,3,4)]
+
+#finally df_02 is a table with the hourly average and the NA values
+
+##------------------------------------COMPARE WITH OTHER STATIONS------------------------------------
+
+#table only with date, time and temperature on the different stations 
+df_station<- data.frame(df_2$id, df_2$date, df_2$h_d, df_2$ta_avg, 
+                  df_WBI$AVG_TA200, df_1443$TT_TU, df_13667$LUFTTEMPERATUR)
+
+df_station<-df_station %>%
+  rename(id = df_2.id, date = df_2.date, hm = df_2.h_d, ta_hobo = df_2.ta_avg,
+         ta_wbi = df_WBI.AVG_TA200, ta_1443 = df_1443.TT_TU, ta_13667 = df_13667.LUFTTEMPERATUR )
+
+#----- HOBO and Stations (df_sation)-----#
+df_station <-unite(df_station, date, hm, col = "dttm", sep = " ")
+
+#fixing date in a date_hour format
+
+df_station$dttm<- ymd_h(df_station$dttm)
+#str(df_station)
+
+# #-----------Linear model WBI----------#
+lm_WBI <- lm(ta_hobo ~ ta_wbi , data = df_station)
+#summary(lm_WBI)
+#R^2 = 0.9684
+#plot(lm_WBI)
+# plot(df_station$ta_hobo,df_station$ta_wbi)
+# 
+# #Predicted value in a new column
+#df_station$pv_WBI<- predict(lm_WBI,newdata = df_station)
+# 
+# #-----------Linear model 1443----------#
+lm_1443<-lm(ta_hobo ~ ta_1443 , data = df_station)
+#summary(lm_1443)
+#R^2 = 0.9731
+#plot(lm_1443)
+# plot(df_station$ta_hobo,df_station$ta_1443)
+#a<- lm_1443$coefficients[1]
+#b<- lm_1443$coefficients[2]
+#pv_eq <-(a + b*df_station$ta_1443) is the same as the fn predict
+# #Predicted value in a new column
+df_station$pv_1443<- predict(lm_1443,newdata = df_station)
+
+
+#-----------Linear model 13667----------#
+lm_13667<-lm(ta_hobo ~ ta_13667 , data = df_station)
+#summary(lm_13667)
+#R^2 = 0.9397
+#plot(lm_13667)
+# plot(df_s2$ta_hobo,df_s2$ta_13667)
+
+#Predicted value in a new column
+#df_station$pv_13667<- predict(lm_13667,newdata = df_station)
+
+#---------------REPLACING VALUES AND MAKING THE NEW TABLE---------------
+
+# DWD 13667 has the highest coef -> pv_13667 es the best option
+
+#Replace only NA with predicted values
+# ORIGIN HOBO (H) OR REGRESSION (R)
+df_station$origin <- ifelse(is.na(df_station$ta_hobo), "R", "H")
+
+#change the predicted value here if I want use another station
+df_station$tmp <- if_else(is.na(df_station$ta_hobo), df_station$pv_1443, df_station$ta_hobo)
+
+df_3<- data.frame(df_station$dttm,df_station$tmp,df_station$origin)
+
+df_3<-df_3 %>%
+  rename(dttm = df_station.dttm, th = df_station.tmp, origin = df_station.origin )
+df_3$th<- round(df_3$th, 3)
+
+df_3<- separate(df_3, dttm, sep = " ", into = c("date","hour")) 
+
+#----- EXPORT DATA -----#
+#enabled only for Exercise 02
+#write.table(df_03, file='10350004_Th.tsv', quote = FALSE, sep = '\t', row.names = FALSE ,col.names = TRUE)
+
+#---------------HOBO INDICES---------------
+
+#---------------Mean temperatures---------------
+
+
+#Mean of the complete series
+T_AVG <- round(mean(df_3$th), 3)
+
+#making day and night
+df_3$hour<- as.ITime(df_3$hour)
+df_3$hour<- hour(df_3$hour)
+
+df_3$day_night<-if_else( 17>=df_3$hour & 6 <=df_3$hour, "day", "night" )
+
+#Mean during the day
+df_3d <- df_3 %>%
+  filter(day_night=="day")
+T_AVG_d<- round(mean(df_3d$th), 3)
+
+#Mean during the night
+df_3n <- df_3 %>%
+  filter(day_night=="night")
+T_AVG_n<- round(mean(df_3n$th), 3)
+
+#general temperature index -> difference between day and night
+d_ND<- T_AVG_d-T_AVG_n
+
+#Mean daily amplitude
+max_min<- df_3 %>%
+  group_by(Day = as.Date(date)) %>%
+  summarise(max(th), min(th),max(th) - min(th))
+
+t_amp <- round(mean(max_min$`max(th) - min(th)`),3)
+
+#Flashiness
+
+a1<-lead(df_3$th,1)
+a1<- a1[1:575]
+a2<-df_3$th[1:length(a1)]
+a3<-abs(a1-a2)
+t_fl<-round((sum(a3)/575), 3)
+
+#Most rapid temperature change
+t_r<- function(x){
+  r<-range(x)
+  o<- r[2]-r[1]
+  return(o)
+}
+
+#3 HOURS
+t_3<- rollapply(df_3$th, 3, FUN = t_r, align = "right", fill = NA)
+t_3_m<- round(max(t_3, na.rm = TRUE),3)
+
+#12 HOURS
+t_12<- rollapply(df_3$th, 12, FUN = t_r, align = "right", fill = NA)
+t_12_m<- round(max(t_12, na.rm = TRUE),3)
+#fraction of NA values
+FNA<-table(df_3$origin)
+f_na<- FNA[2]/576
+
+#---------------Light intensity indices---------------
+
+# Average light intensity at midday
+midday<- df_1 %>%
+  filter(df_1$h_d == 12)
+l_md <- round(mean(midday$lux),3)
+# 95 percentile of light -> l1 
+
+#---------------Long term average (for the report)-----------------
+
+X1443_daily <- read_delim("C:/Users/Valentina/OneDrive/Data collection, storage and management/Data/1443_daily.txt", 
+                          ";", escape_double = FALSE, col_types = cols(FM = col_skip(), 
+                                                                       FX = col_skip(), MESS_DATUM = col_date(format = "%Y%m%d"), 
+                                                                       NM = col_skip(), PM = col_skip(), 
+                                                                       QN_3 = col_skip(), QN_4 = col_skip(), 
+                                                                       RSK = col_skip(), RSKF = col_skip(), 
+                                                                       SDK = col_skip(), SHK_TAG = col_skip(), 
+                                                                       STATIONS_ID = col_skip(), TGK = col_skip(), 
+                                                                       UPM = col_skip(), VPM = col_skip(), 
+                                                                       eor = col_skip()), trim_ws = TRUE)
+#missing data from 01/19
+DWD_1443 <- read_delim("C:/Users/Valentina/OneDrive/Data collection, storage and management/Data/DWD_1443.txt", 
+                       ";", escape_double = FALSE, col_types = cols(MESS_DATUM = col_datetime(format = "%Y%m%d%H"), 
+                                                                    QN_9 = col_skip(), RF_TU = col_skip(), 
+                                                                    STATIONS_ID = col_skip(), eor = col_skip()), 
+                       trim_ws = TRUE)
+
+df_x1<- DWD_1443 %>%
+  filter( year(MESS_DATUM)==2019 & month(MESS_DATUM)==1  & day(MESS_DATUM)<= 6 ) %>%
+  separate(MESS_DATUM, sep = " ", into = c("date","hm")) %>%
+  group_by(date) %>%
+  summarise(tmp = round(mean(TT_TU),3))
+df_x1$date<- as.POSIXct(df_x1$date)
+
+# just the dates I need 
+df_x2<- X1443_daily %>%
+  filter( (month(MESS_DATUM)==12 & day(MESS_DATUM)>=14 ) | (month(MESS_DATUM)==1 & day(MESS_DATUM)<=6))%>%
+  rename( date = MESS_DATUM, tmp = TMK)
+df_x2$date<- as.POSIXct(df_x2$date)
+df_x2$TXK<-NULL
+df_x2$TNK<-NULL
+
+#all in one table
+df_x3 <- bind_rows(df_x2,df_x1)
+
+df_x3<- df_x3 %>%
+  mutate(date_1 = as.Date(date))%>%
+  mutate(yr = year(date))%>%
+  mutate(mt = month(date))%>%
+  unite(yr, mt, col = "Y_M", sep = "-")%>%
+  group_by(Y_M) %>%
+  summarise(tmp_avg = mean(tmp))
+
+#separated tmp for each year
+df_x4<- df_x3 %>%
+  separate(Y_M, sep = "-", into = c("year","month")) %>%
+  spread(month, tmp_avg)
+
+#getting the years
+y_1<-df_x4$year
+y_2<- lead(df_x4$year,1)
+#year 2020
+y_2[71]<-2020
+
+#calulationg average temperature
+tmp_24<- (df_x4$`12`+lead(df_x4$`1`,1))/2
+#adding missing data
+tmp_24[71]<- 5.684
+
+#data frame with year and average
+df_71yrs<-data.frame(y_1,y_2,AVG_tmp = round(tmp_24, 3))
+df_71yrs<- unite(df_71yrs, y_1, y_2, col = "years", sep = "-")
+#-----------------------------PLOTS--------------------------------
+df_1<-unite(df_1, date, hm, col = "dttm", sep = " ")
+df_1$dttm<-as.POSIXct(df_1$dttm)
+#map of the location in freiburg
+
+#plot of raw data
+ggplot()+
+geom_line(data = df_1, aes(dttm, ta), col= "slategrey", size = 1) + xlab("Date") +ylab("Temperature °Celsius" ) + theme_bw() + ggtitle("Air temperature Raw data")
+#ggplot 3 stations + hobo
+ggplot() +
+  geom_line(data = df_station, aes(dttm, ta_hobo), col = "slategrey", size = 1) +
+  geom_line(data = df_station, aes(dttm,ta_wbi), col = "tomato", size = 1) +
+  geom_line(data = df_station, aes(dttm,ta_1443), col = "pink", size = 1) +
+  geom_line(data = df_station, aes(dttm,ta_13667), col = "grey", size = 1) +
+  xlab("Date") +ylab("Temperature °Celsius" ) + 
+  theme_bw() + ggtitle("Air temperature ")
+
+#plot of predicted data points and data points
+ggplot() +
+  geom_line(data = df_station, aes(dttm, ta_hobo), col = "slategrey", size = 2) +
+  geom_line(data = df_station, aes(dttm,pv_1443), col = "tomato", size = 1) + #change the predicted value if I want to compare with other station
+  xlab("Date") +ylab("Temperature °Celsius" ) + 
+  theme_bw() + ggtitle("Air temperature")
+
+# barplot historical average temperature 
+
+ggplot()+
+  geom_col(data = df_71yrs, aes(years, AVG_tmp), col = "red")
